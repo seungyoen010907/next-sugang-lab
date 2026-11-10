@@ -114,17 +114,32 @@ function summarize(name, out) {
 
 // ---- 진짜 모델 ------------------------------------------------------------
 async function liveAgent({ id, prompt, student, tools, emit }) {
-  // TODO [L5] 에이전트 루프 (진짜 모델)
-  //   - 어느 회사 모델이든 루프는 같다. 회사별 차이는 server/providers.js 가 맞춰 준다
-  //   1) const session = provider.start({ system: systemPrompt(student), prompt, tools: TOOLS })
-  //   2) const step = await session.next((text) => emit({ type: 'ai_delta', payload: { id, text } }))
-  //      모델이 쓰는 글자가 오는 대로 WebSocket 으로 흘려보낸다 (스트리밍)
-  //   3) step.refused 면 거절, step.truncated 면 잘림으로 멈춘다. step.calls 가 비었으면 끝
-  //   4) 도구 호출마다 validate 로 입력을 검사하고 runTool 로 실행해서,
-  //      session.reply([{ id, name, output, isError }]) 로 결과를 돌려준다
-  //   5) 2) 로 돌아간다. 단 MAX_TURNS 번을 넘으면 멈춘다 (비용 상한)
-  //   - 키가 없으면 mockAgent 가 같은 순서로 흉내 낸다. 그 코드를 먼저 읽어 보라
-  throw new Error('L5: server/ai.js 의 liveAgent 를 채우세요. 키 없이 보려면 .env 의 AI_PROVIDER=mock');
+  // [L5] 에이전트 루프 (진짜 모델)
+  //   어느 회사 모델이든 루프는 같다. 회사별 차이는 server/providers.js 가 맞춰 준다
+  const session = provider.start({ system: systemPrompt(student), prompt, tools: TOOLS });
+
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    // 모델 한 번 부르기. 쓰는 글자는 오는 대로 WebSocket 으로 흘려보낸다 (스트리밍)
+    const step = await session.next((text) => emit({ type: 'ai_delta', payload: { id, text } }));
+    if (step.refused) throw new Error('AI 가 이 요청에는 답하지 않았습니다. 요청을 바꿔 다시 적어 주세요.');
+    if (step.truncated) throw new Error('AI 답이 너무 길어 중간에 잘렸습니다. 요청을 짧게 다시 적어 주세요.');
+    if (!step.calls.length) return; // 도구를 더 부르지 않으면 모델이 답을 끝낸 것이다
+
+    // 모델이 부른 도구를 하나씩 실행한다. 입력은 믿지 않고 validate 로 다시 검사한다
+    const results = step.calls.map((call) => {
+      const input = validate(call.name, call.input);
+      if (!input) return { id: call.id, name: call.name, output: `잘못된 도구 호출입니다: ${call.name}`, isError: true };
+      try {
+        return { id: call.id, name: call.name, output: runTool(call.name, input, tools, emit, id) };
+      } catch (err) {
+        return { id: call.id, name: call.name, output: `도구 실행 실패: ${err.message}`, isError: true };
+      }
+    });
+    // 결과를 다음 차례에 모델에게 돌려준다. 모델은 이걸 보고 다시 생각한다
+    session.reply(results);
+  }
+  // 비용 상한. 모델이 끝없이 도구를 부르면 여기서 멈춘다
+  throw new Error(`AI 가 ${MAX_TURNS}번 안에 답을 끝내지 못했습니다. 요청을 더 구체적으로 적어 주세요.`);
 }
 
 // ---- 키가 없을 때 쓰는 모의 에이전트 -------------------------------------

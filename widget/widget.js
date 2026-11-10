@@ -109,24 +109,39 @@
   }
 
   function joinLine() {
-    // TODO [L6] 새로고침하거나 끊겼다 붙으면, 새로 줄 서지 말고 원래 티켓으로 돌아간다
-    //   - sessionStorage 의 STORE 에서 ticketId 를 꺼내 있으면 send('resume', { ticketId }) 하고 return
+    // [L6] 새로고침하거나 끊겼다 붙으면, 새로 줄 서지 말고 원래 티켓으로 돌아간다
+    var saved = null;
+    try {
+      saved = sessionStorage.getItem(STORE);
+    } catch (e) {}
+    if (saved) {
+      send('resume', { ticketId: saved });
+      return;
+    }
     send('join', { key: start.key, studentId: start.studentId, action: start.action });
   }
 
   function onClose() {
     if (closedByUs) return;
-    // TODO [L6] 끊기면 다시 붙기
-    //   - 1초, 2초, 4초, 최대 8초 간격으로 connect() 를 다시 부른다 (retry 로 횟수 세기)
-    //   - 서버가 순번을 15초 동안 지켜 준다 (server/queue.js 의 GRACE)
-    setStatus('연결이 끊겼습니다. 대기를 취소하고 다시 신청하세요.');
+    // [L6] 끊기면 다시 붙기
+    //   1초, 2초, 4초, 최대 8초 간격. 서버가 순번을 15초 동안 지켜 준다 (server/queue.js 의 GRACE)
+    //   간격을 늘리는 이유: 서버가 잠깐 죽었을 때 수천 명이 동시에 계속 두드리면 다시 일어나지 못한다
+    var delay = Math.min(1000 * Math.pow(2, retry), 8000);
+    retry += 1;
+    setStatus('연결이 끊겼습니다. ' + delay / 1000 + '초 뒤 다시 연결합니다...');
+    setTimeout(connect, delay);
   }
 
   function handle(msg) {
     var p = msg.payload || {};
 
-    // TODO [L6] 하트비트 응답
-    //   - 'ping' 을 받으면 send('pong', { t: p.t }) 로 바로 답한다. 안 하면 서버가 죽은 연결로 보고 끊는다
+    // [L6] 하트비트 응답. 안 하면 서버가 죽은 연결로 보고 끊는다
+    if (msg.type === 'ping') {
+      send('pong', { t: p.t });
+      return;
+    }
+    // [L6] 원래 번호표로 돌아왔으면 알려 준다
+    if (msg.type === 'joined' && p.resumed) setStatus('원래 순번으로 돌아왔습니다.');
 
     // [L3] 서버가 보내는 메시지 처리
     if (msg.type === 'joined') {

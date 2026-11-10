@@ -298,19 +298,38 @@
     };
   }
 
-  // TODO [L6] 서버 시간 맞추기
-  //   - syncTime: live 로 { type: 'time', payload: { t0: Date.now() } } 를 보낸다. 30초마다 다시
-  //   - onTime(p): t1 = Date.now(), 왕복 시간 rtt = t1 - p.t0
-  //     서버가 답을 만든 순간은 왕복의 가운데쯤이다. offset = p.server + rtt / 2 - t1
-  //   - state.offset = offset, state.synced = true, 시계 라벨을 '서버 시간' 으로 바꾸고 #clock 에 class 'synced'
-  //   - 학교 서버 시계는 일부러 몇 초 어긋나 있다 (server/school.js 의 SKEW). 맞추기 전과 후 카운트다운을 비교해 보라
-  function syncTime() {}
-  function onTime() {}
+  // [L6] 서버 시간 맞추기
+  //   학교 서버 시계는 일부러 몇 초 어긋나 있다 (server/school.js 의 SKEW). 맞추기 전과 후 카운트다운을 비교해 보라
+  var syncTimer = null;
+  function syncTime() {
+    if (live && live.readyState === WebSocket.OPEN) live.send(JSON.stringify({ type: 'time', payload: { t0: Date.now() } }));
+    // 30초마다 다시 잰다. /live 가 다시 붙을 때마다 불려도 타이머는 하나만 둔다
+    if (!syncTimer) syncTimer = setInterval(syncTime, 30000);
+  }
+  function onTime(p) {
+    var t1 = Date.now();
+    var rtt = t1 - p.t0; // 왕복 시간
+    // 서버가 답을 만든 순간은 왕복의 가운데쯤이다. 그때 서버 시각이 p.server 였으니, 지금 서버 시각은 p.server + rtt / 2
+    state.offset = p.server + rtt / 2 - t1;
+    state.synced = true;
+    $('clock-label').textContent = '서버 시간';
+    $('clock').classList.add('synced');
+  }
 
-  // TODO [L7] 실시간 잔여석
-  //   - onSeats(p): state.seats[p.key] = { count: p.count, cap: p.cap }
-  //   - 화면의 [data-seat="키"] 요소를 모두 찾아 seatCell 과 같은 글자/클래스로 바꾸고, 잠깐 'flash' 클래스를 준다
-  function onSeats() {}
+  // [L7] 실시간 잔여석
+  //   표 전체를 다시 그리지 않고, 그 과목의 인원 칸만 seatCell 과 같은 모양으로 바꾼다
+  function onSeats(p) {
+    state.seats[p.key] = { count: p.count, cap: p.cap };
+    var html = seatCell({ key: p.key, count: p.count, cap: p.cap });
+    document.querySelectorAll('[data-seat="' + CSS.escape(p.key) + '"]').forEach(function (el) {
+      el.outerHTML = html;
+    });
+    // 바뀐 칸을 잠깐 반짝이게 한다 (outerHTML 로 바꿨으니 새 요소를 다시 찾는다)
+    document.querySelectorAll('[data-seat="' + CSS.escape(p.key) + '"]').forEach(function (el) {
+      el.classList.add('flash');
+      setTimeout(function () { el.classList.remove('flash'); }, 800);
+    });
+  }
 
   // ---- AI 시간표 도우미 화면 (서버 쪽 에이전트는 L5) ----------------------
   var TOOL_LABEL = { search_courses: '과목 검색', check_timetable: '시간표 확인', my_status: '내 상태 확인', propose_plan: '제안 정리' };

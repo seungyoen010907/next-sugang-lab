@@ -87,8 +87,8 @@ export function createSchool({ secret }) {
     taken.add(studentId);
     keys.add(key);
 
-    // TODO [L7] 잔여석이 바뀌었다고 모두에게 알린다
-    //   - broadcast({ type: 'seats', payload: { key, count: taken.size, cap: course.cap } })
+    // [L7] 잔여석이 바뀌었다고 /live 에 붙은 모두에게 알린다. 새로고침 없이 인원이 바뀐다
+    broadcast({ type: 'seats', payload: { key, count: taken.size, cap: course.cap } });
     return { ok: true, status: 200 };
   }
 
@@ -100,11 +100,23 @@ export function createSchool({ secret }) {
     return { ok: true, status: 200 };
   }
 
-  // TODO [L7] 매크로 방지: 10초 안에 6번 넘게 신청하면 보안문자를 풀어야 계속할 수 있다
-  //   - attempts 에 학번별 시각을 쌓고 10초 지난 것은 버린다
-  //   - 넘으면 captchas 에 5글자 정답을 만들어 두고 { status: 429, code: 'captcha_required' } 를 돌려준다
-  //   - 정답이 걸려 있는 동안에는 계속 429
-  function guard() {
+  // [L7] 매크로 방지: 10초 안에 6번 넘게 신청하면 보안문자를 풀어야 계속할 수 있다
+  //   신청 결과(성공, 실패)와 상관없이 "시도 횟수"를 센다. 매크로는 실패해도 계속 두드리기 때문이다
+  const WINDOW = 10_000;
+  const LIMIT = 6;
+  const CAPTCHA_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 헷갈리는 0/O, 1/I 는 뺐다
+  const captchaRequired = () => ({ status: 429, code: 'captcha_required', message: '신청이 너무 잦습니다. 보안문자를 입력하세요.' });
+  function guard(studentId) {
+    if (captchas.has(studentId)) return captchaRequired(); // 정답을 맞힐 때까지 계속 막는다
+    const t = Date.now();
+    const recent = (attempts.get(studentId) || []).filter((at) => t - at < WINDOW);
+    recent.push(t);
+    attempts.set(studentId, recent);
+    if (recent.length > LIMIT) {
+      const answer = Array.from({ length: 5 }, () => CAPTCHA_CHARS[crypto.randomInt(CAPTCHA_CHARS.length)]).join('');
+      captchas.set(studentId, answer);
+      return captchaRequired();
+    }
     return null;
   }
 
@@ -210,14 +222,28 @@ export function createSchool({ secret }) {
       }
       const p = msg.payload || {};
 
-      // TODO [L6] 서버 시간 알려 주기
-      //   - { type: 'time', payload: { t0 } } 를 받으면 { type: 'time', payload: { t0, server: now() } } 로 바로 돌려준다
-      //   - 브라우저가 보낸 시각(t0), 받은 시각(t1), 서버 시각으로 시계 차이를 계산한다 (site/app.js)
+      // [L6] 서버 시간 알려 주기
+      //   t0 는 브라우저가 보낸 그대로 돌려준다. 브라우저가 왕복 시간을 재는 데 쓴다 (site/app.js)
+      if (msg.type === 'time') {
+        send({ type: 'time', payload: { t0: Number(p.t0) || 0, server: now() } });
+        return;
+      }
 
-      // TODO [L5] AI 시간표 에이전트
-      //   - { type: 'ai_plan', payload: { prompt } } 를 받으면 runAgent 를 부르고, 나오는 이벤트를 그대로 send 한다
-      //   - 한 사람당 동시에 하나만 (busy). 프롬프트는 300자로 자른다
-      //   - 에이전트가 쓰는 도구는 이 서버의 함수들이다: 과목 검색, 잔여석, 시간 겹침 검사
+      // [L5] AI 시간표 에이전트
+      //   - 한 사람당 동시에 하나만 (busy). 연타해도 모델 호출(비용)이 겹치지 않는다
+      //   - 학생 정보는 브라우저가 보낸 값이 아니라 세션에서 온 student 를 쓴다
+      //   - 에이전트가 쓰는 도구는 이 서버의 함수들이다 (agentTools). 모델은 데이터에 직접 닿지 않는다
+      if (msg.type === 'ai_plan') {
+        if (busy) return;
+        busy = true;
+        try {
+          const prompt = String(p.prompt ?? '').slice(0, 300);
+          await runAgent({ prompt, student, tools: agentTools(student), emit: send });
+        } finally {
+          busy = false;
+        }
+        return;
+      }
     });
     ws.on('close', () => lives.delete(ws));
   }

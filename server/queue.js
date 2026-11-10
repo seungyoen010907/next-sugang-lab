@@ -88,9 +88,14 @@ export function createQueue({ secret }) {
     for (const ws of consoles) send(ws, { type: 'stats', payload: stats });
   }, 500);
 
-  // TODO [L6] 끊긴 사람 정리하기
-  //   - 소켓이 끊긴 ticket 은 leftAt 을 기록해 두고 GRACE 동안은 줄에서 빼지 않는다 (새로고침해도 순번 유지)
-  //   - GRACE 가 지나도 돌아오지 않으면 remove 한다
+  // [L6] 끊긴 사람 정리하기
+  //   소켓이 끊긴 ticket 은 GRACE 동안 줄에 남겨 둔다 (새로고침해도 순번 유지). 그래도 안 돌아오면 뺀다
+  setInterval(() => {
+    const now = Date.now();
+    for (const ticket of [...line]) {
+      if (ticket.leftAt && now - ticket.leftAt > GRACE) remove(ticket);
+    }
+  }, 1000);
 
   // ---- WebSocket 한 연결 처리 ----------------------------------------------
   function onConnection(ws) {
@@ -99,10 +104,14 @@ export function createQueue({ secret }) {
     let alive = true;
     let beat = null;
 
-    // TODO [L6] 하트비트: 10초마다 ping 을 보내고, pong 이 안 오면 끊는다
-    //   - 브라우저 WebSocket 은 프로토콜 ping 을 직접 못 보내서, 앱 메시지 { type: 'ping' } / { type: 'pong' } 로 한다
-    //   - alive 가 false 인 채로 다음 차례가 오면 ws.terminate()
-    //   - Network > WS 탭에서 10초마다 오가는 ping/pong 프레임이 보인다
+    // [L6] 하트비트: 10초마다 ping 을 보내고, pong 이 안 오면 끊는다
+    //   브라우저 WebSocket 은 프로토콜 ping 을 직접 못 보내서, 앱 메시지 { type: 'ping' } / { type: 'pong' } 로 한다
+    //   노트북 덮개를 닫거나 와이파이가 끊기면 close 가 안 올 수 있다. 그런 "죽은 연결"을 여기서 찾아낸다
+    beat = setInterval(() => {
+      if (!alive) return ws.terminate(); // 지난 ping 에 답이 없었다 -> close 처리로 넘어간다
+      alive = false;
+      send(ws, { type: 'ping', payload: { t: Date.now() } });
+    }, 10_000);
 
     ws.on('message', (raw) => {
       let msg;
@@ -147,8 +156,7 @@ export function createQueue({ secret }) {
         }
         if (ticket) remove(ticket); // 한 소켓이 두 번 join 하면 앞 번호표는 버린다 (자리 두 개 차지 방지)
         const studentId = String(p.studentId ?? '').slice(0, 20);
-        ticket = newTicket({ studentId, action: 'enroll', ws });
-        send(ws, { type: 'joined', payload: { ticketId: ticket.id, ahead: line.indexOf(ticket) } });
+        ticket = newTicket({ studentId, action: 'enroll', ws });        send(ws, { type: 'joined', payload: { ticketId: ticket.id, ahead: line.indexOf(ticket) } });
         return;
       }
       if (msg.type === 'leave') {
@@ -157,18 +165,29 @@ export function createQueue({ secret }) {
         return;
       }
 
-      // TODO [L6] 다시 붙기
-      //   - { type: 'resume', payload: { ticketId } } 를 받으면 tickets 에서 찾아 ws 를 새 소켓으로 바꾸고 leftAt 을 지운다
-      //   - 못 찾으면 { type: 'error', payload: { code: 'expired' } } (위젯은 처음부터 다시 줄을 선다)
+      // [L6] 다시 붙기
+      //   번호표가 아직 줄에 있으면 새 소켓으로 바꿔 끼우고, 없으면(GRACE 지남, 서버 재시작) expired
+      if (msg.type === 'resume') {
+        const found = tickets.get(String(p.ticketId ?? ''));        if (!found || found.bot) {
+          send(ws, { type: 'error', payload: { code: 'expired' } });
+          return;
+        }
+        if (ticket && ticket !== found) remove(ticket);
+        ticket = found;
+        ticket.ws = ws;
+        delete ticket.leftAt;
+        ticket.lastSent = ''; // 새 소켓에는 순번을 처음부터 다시 보낸다
+        send(ws, { type: 'joined', payload: { ticketId: ticket.id, ahead: line.indexOf(ticket), resumed: true } });
+        return;
+      }
     });
 
     ws.on('close', () => {
       clearInterval(beat);
       consoles.delete(ws);
       if (ticket && ticket.ws === ws) {
-        // TODO [L6] 끊겨도 바로 빼지 않는다
-        //   - remove 대신 ticket.leftAt = Date.now() 만 기록한다 (정리는 위의 GRACE 타이머가 한다)
-        remove(ticket);
+        // [L6] 끊겨도 바로 빼지 않는다. 정리는 위의 GRACE 타이머가 한다
+        ticket.leftAt = Date.now();
       }
     });
   }
