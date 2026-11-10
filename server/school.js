@@ -61,11 +61,13 @@ export function createSchool({ secret }) {
   function enroll(studentId, key, token) {
     if (now() < openAt) return fail(403, 'not_open', '수강신청 기간이 아닙니다.');
 
-    // TODO [L4] 통과 토큰 검증
-    //   - const t = verifyToken(secret, token)
-    //   - t 가 없거나, t.a 가 'enroll' 이 아니거나, t.s 가 이 학번이 아니면 403 'queue_required'
-    //   - usedTickets 에 t.t 가 있으면 403 'token_used' (같은 토큰 두 번 쓰기 금지). 없으면 넣는다
-    //   - 이게 들어가면 콘솔에서 QUEUE.enabled = false 나 fetch 로 직접 부르는 우회가 막힌다
+    // [L4] 통과 토큰 검증
+    //   이게 들어가면 콘솔에서 QUEUE.enabled = false 나 fetch 로 직접 부르는 우회가 막힌다
+    //   학번은 브라우저가 보낸 값이 아니라 세션에서 온 studentId 와 비교한다
+    const t = verifyToken(secret, token);
+    if (!t || t.a !== 'enroll' || t.s !== studentId) return fail(403, 'queue_required', '대기열을 거쳐 신청하세요.');
+    if (usedTickets.has(t.t)) return fail(403, 'token_used', '이미 사용한 입장 토큰입니다. 다시 줄을 서세요.');
+    usedTickets.add(t.t);
 
     const course = COURSE_BY_KEY.get(key);
     if (!course) return fail(404, 'no_course', '학수번호 또는 분반을 확인하세요.');

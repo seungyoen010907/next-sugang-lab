@@ -49,21 +49,35 @@
   // 줄 서기 시작. opts = { action: 'enroll', studentId }, cb(token, reason)
   function enter(opts, cb) {
     if (pending) return; // 이미 줄 서는 중이면 무시 (버튼 연타 방지)
-    // TODO [L1] 대기 화면 iframe 띄우기
-    //   - injectStyle() 한 번, document.createElement('iframe') 에 class 'nq-frame', src WIDGET_URL
-    //   - iframe.title 은 '접속 대기', sandbox 는 'allow-scripts allow-same-origin'
-    //   - document.body 에 붙이고 frame 변수에 기억, pending = { opts: opts, cb: cb }
-    //   - L1 전에는 아래 stub 처럼 줄을 안 서고 바로 통과시킨다 (토큰 없이). 대기열이 죽으면 그냥 통과시키는 사이트가 실제로 많았다
-    if (cb) cb(null, 'no-queue');
+    // [L1] 대기 화면 iframe 띄우기
+    injectStyle();
+    var iframe = document.createElement('iframe');
+    iframe.className = 'nq-frame';
+    iframe.src = WIDGET_URL;
+    iframe.title = '접속 대기';
+    // 스크립트는 돌게 하되, 최상위 창 이동·팝업 같은 나머지 권한은 주지 않는다
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    document.body.appendChild(iframe);
+    frame = iframe;
+    pending = { opts: opts, cb: cb };
   }
 
-  // TODO [L2] iframe 의 편지 받기
-  //   - window 에 message 리스너를 단다
-  //   - e.origin 이 QUEUE_ORIGIN 이 아니거나 e.source 가 frame.contentWindow 가 아니면 무시한다 (남이 보낸 가짜 '통과' 편지 차단)
-  //   - data.source 가 'next-queue' 인 것만 본다
-  //   - type 'ready'  -> post('start', { key, studentId, action }) 로 누가 무엇을 하려는지 알려 준다
-  //   - type 'pass'   -> finish(payload.token)
-  //   - type 'cancel' -> finish(null, 'cancel')
+  // [L2] iframe 의 편지 받기
+  window.addEventListener('message', function (e) {
+    // 우리 iframe 이 보낸 편지만 받는다. 고객사 페이지의 다른 스크립트가 보낸 가짜 'pass' 는 여기서 버려진다
+    if (!frame || e.source !== frame.contentWindow || e.origin !== QUEUE_ORIGIN) return;
+    var data = e.data;
+    if (!data || data.source !== 'next-queue') return;
+    var payload = data.payload || {};
+    if (data.type === 'ready') {
+      var opts = (pending && pending.opts) || {};
+      post('start', { key: config.key, studentId: opts.studentId, action: opts.action });
+    } else if (data.type === 'pass') {
+      finish(payload.token);
+    } else if (data.type === 'cancel') {
+      finish(null, 'cancel');
+    }
+  });
 
   // 고객사가 부르는 하나뿐인 함수. NextQueue('init', {...}) / NextQueue('enter', {...}, cb)
   function api(command, a, b) {

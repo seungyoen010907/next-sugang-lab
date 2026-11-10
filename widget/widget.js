@@ -32,10 +32,12 @@
   }
 
   // ---- 고객사(부모)와 편지 ------------------------------------------------
-  // TODO [L2] 부모에게 편지 보내기
-  //   - parent.postMessage({ source: 'next-queue', type, payload }, PARENT_ORIGIN)
-  //   - targetOrigin 에 '*' 를 쓰지 않는다
-  function toParent() {}
+  // [L2] 부모에게 편지 보내기
+  //   targetOrigin 에 부모 origin 을 적어서, 부모가 다른 페이지로 바뀌었으면 편지가 버려지게 한다
+  function toParent(type, payload) {
+    if (!PARENT_ORIGIN || parent === window) return; // 혼자 열렸으면 보낼 곳이 없다
+    parent.postMessage({ source: 'next-queue', type: type, payload: payload || {} }, PARENT_ORIGIN);
+  }
 
   function pass(token) {
     document.querySelector('.card').classList.add('passed');
@@ -50,16 +52,22 @@
     }, 350);
   }
 
-  // TODO [L2] 부모의 편지 받기
-  //   - message 리스너에서 e.source 가 parent, e.origin 이 PARENT_ORIGIN 인지 확인한다
-  //   - data.source 가 'next-queue' 이고 type 이 'start' 면 start = payload 로 기억하고 begin()
-  //   - 다 달았으면 맨 아래에서 toParent('ready') 로 "준비됐다"고 알린다
+  // [L2] 부모의 편지 받기
+  window.addEventListener('message', function (e) {
+    // 나를 띄운 부모 창이 보낸 편지만 받는다 (보낸 창과 origin 을 둘 다 확인)
+    if (e.source !== parent || e.origin !== PARENT_ORIGIN) return;
+    var data = e.data;
+    if (!data || data.source !== 'next-queue') return;
+    if (data.type === 'start') {
+      if (start) return; // start 는 한 번만. 두 번 오면 줄을 두 번 서게 된다
+      start = data.payload || {};
+      begin();
+    }
+  });
 
   function begin() {
-    // TODO [L3] 진짜 대기열에 줄 서기
-    //   - L3 전에는 fakeWait() 로 3초 기다리는 흉내만 낸다
-    //   - L3 에서는 connect() 로 바꾼다
-    fakeWait();
+    // [L3] 진짜 대기열에 줄 서기 (fakeWait 대신 서버에 붙는다)
+    connect();
   }
 
   // 서버 없이 3초 기다리는 흉내 (L2 까지 확인용)
@@ -80,11 +88,24 @@
   }
 
   function connect() {
-    // TODO [L3] WebSocket 열고 줄 서기
-    //   - ws = new WebSocket(WS_URL)
-    //   - onopen: retry = 0, setStatus(''), joinLine()
-    //   - onmessage: JSON 을 풀어 handle(msg). 못 풀면 무시
-    //   - onclose: onClose
+    // [L3] WebSocket 열고 줄 서기
+    //   이 코드는 iframe(:4000) 안에서 돌기 때문에 연결 요청의 Origin 은 :4000 이 된다
+    ws = new WebSocket(WS_URL);
+    ws.onopen = function () {
+      retry = 0;
+      setStatus('');
+      joinLine();
+    };
+    ws.onmessage = function (e) {
+      var msg;
+      try {
+        msg = JSON.parse(e.data);
+      } catch (err) {
+        return; // 형식이 깨진 프레임은 무시한다
+      }
+      handle(msg);
+    };
+    ws.onclose = onClose;
   }
 
   function joinLine() {
@@ -107,11 +128,33 @@
     // TODO [L6] 하트비트 응답
     //   - 'ping' 을 받으면 send('pong', { t: p.t }) 로 바로 답한다. 안 하면 서버가 죽은 연결로 보고 끊는다
 
-    // TODO [L3] 서버가 보내는 메시지 처리
-    //   - 'joined' -> ticketId = p.ticketId 를 sessionStorage 에 저장, render({ ahead: p.ahead, behind: 0, eta: 0 })
-    //   - 'wait'   -> render(p)
-    //   - 'pass'   -> closedByUs = true, ws.close(), pass(p.token)
-    //   - 'error'  -> setStatus 로 이유를 보여 준다. 'expired' 면 티켓을 지우고 다시 join
+    // [L3] 서버가 보내는 메시지 처리
+    if (msg.type === 'joined') {
+      ticketId = p.ticketId;
+      try {
+        sessionStorage.setItem(STORE, ticketId);
+      } catch (e) {}
+      render({ ahead: p.ahead, behind: 0, eta: 0 });
+    } else if (msg.type === 'wait') {
+      render(p);
+    } else if (msg.type === 'pass') {
+      closedByUs = true; // 우리가 닫는 것이니 onClose 가 '끊겼다'고 띄우지 않게 한다
+      ws.close();
+      pass(p.token);
+    } else if (msg.type === 'error') {
+      if (p.code === 'expired') {
+        // 번호표가 사라졌으면 처음부터 다시 줄을 선다
+        ticketId = null;
+        try {
+          sessionStorage.removeItem(STORE);
+        } catch (e) {}
+        send('join', { key: start.key, studentId: start.studentId, action: start.action });
+        setStatus('번호표가 만료되어 다시 줄을 섭니다.');
+      } else {
+        setStatus('대기열 오류: ' + (p.code || '알 수 없음'));
+        console.warn('[next-queue] error', p.code);
+      }
+    }
   }
 
   $('cancel').addEventListener('click', function () {
